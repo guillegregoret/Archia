@@ -1,11 +1,7 @@
-Flask
 requests
 psutil
 tqdm
-hashlib
-gzip
-shutil
-json
-datetime
-getpass
-werkzeug
+azure-storage-blob
+azure-identity
+boto3
+botocore

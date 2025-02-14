@@ -11,6 +11,11 @@ import getpass
 import shutil
 import json
 import tempfile
+from azure.storage.blob import BlobServiceClient
+from azure.identity import DefaultAzureCredential
+from botocore.exceptions import NoCredentialsError, PartialCredentialsError
+import boto3
+import threading
 
 SERVER_URL = "https://archia.gregoret.com.ar:7200"
 UPLOAD_URL = f"{SERVER_URL}/upload"
@@ -30,6 +35,36 @@ MAX_CPU_PERCENT = 85  # Maximum CPU usage percentage
 MAX_MEMORY_PERCENT = 94  # Maximum memory usage percentage
 THROTTLE_SLEEP = 0.1  # Sleep time in seconds when throttling
 CONFIG_FILE = "config.json"
+
+# Transfer animation frames
+computer = "💻"
+cloud = "☁️"
+file_emoji = "📄"
+folder_emoji = "📁"
+frames = [
+    f"{computer}{file_emoji}          {cloud}",
+    f"{computer} {file_emoji}         {cloud}",
+    f"{computer}  {file_emoji}        {cloud}",
+    f"{computer}   {file_emoji}       {cloud}",
+    f"{computer}    {file_emoji}      {cloud}",
+    f"{computer}     {file_emoji}     {cloud}",
+    f"{computer}      {file_emoji}    {cloud}",
+    f"{computer}       {file_emoji}   {cloud}",
+    f"{computer}        {file_emoji}  {cloud}",
+    f"{computer}         {file_emoji} {cloud}",
+    f"{computer}          {file_emoji}{cloud}",
+    f"{computer}{folder_emoji}          {cloud}",
+    f"{computer} {folder_emoji}         {cloud}",
+    f"{computer}  {folder_emoji}        {cloud}",
+    f"{computer}   {folder_emoji}       {cloud}",
+    f"{computer}    {folder_emoji}      {cloud}",
+    f"{computer}     {folder_emoji}     {cloud}",
+    f"{computer}      {folder_emoji}    {cloud}",
+    f"{computer}       {folder_emoji}   {cloud}",
+    f"{computer}        {folder_emoji}  {cloud}",
+    f"{computer}         {folder_emoji} {cloud}",
+    f"{computer}          {folder_emoji}{cloud}",
+]
 
 def check_resources():
     """Check if system resources are over threshold"""
@@ -299,7 +334,87 @@ def package_folder(folder_path, session):
                 print("Package uploaded successfully.")
             else:
                 print(f"Failed to upload package: {response.json()}")
-                
+
+def upload_to_azure(folder_path, azure_storage_account, azure_storage_key):
+    """Upload a folder to Azure Storage."""
+    try:
+        # Initialize the BlobServiceClient with the account name and key
+        blob_service_client = BlobServiceClient(account_url=f"https://{azure_storage_account}.blob.core.windows.net", credential=azure_storage_key)
+
+        # Create a container if it doesn't exist
+        container_name = "archia-backups"
+        container_client = blob_service_client.get_container_client(container_name)
+        container_client.create_container()
+
+        # Upload files to the container
+        for root, _, files in os.walk(folder_path):
+            for file_name in files:
+                file_path = os.path.join(root, file_name)
+                blob_client = blob_service_client.get_blob_client(container=container_name, blob=file_name)
+                with open(file_path, "rb") as data:
+                    blob_client.upload_blob(data)
+                print(f"Uploaded {file_name} to Azure Storage.")
+
+    except Exception as e:
+        print(f"Failed to upload to Azure Storage: {str(e)}")
+
+def upload_to_s3(folder_path, aws_access_key, aws_secret_key, aws_region, aws_bucket):
+    """Upload a folder to AWS S3."""
+    try:
+        # Initialize the S3 client
+        s3_client = boto3.client('s3', aws_access_key_id=aws_access_key, aws_secret_access_key=aws_secret_key, region_name=aws_region)
+
+        # Upload files to the S3 bucket
+        for root, _, files in os.walk(folder_path):
+            for file_name in files:
+                file_path = os.path.join(root, file_name)
+                s3_client.upload_file(file_path, aws_bucket, file_name)
+                print(f"Uploaded {file_name} to AWS S3.")
+
+    except NoCredentialsError:
+        print("Credentials not available.")
+    except PartialCredentialsError:
+        print("Incomplete credentials provided.")
+    except Exception as e:
+        print(f"Failed to upload to AWS S3: {str(e)}")
+
+def upload_compressed_package_to_azure(folder_path, azure_storage_account, azure_storage_key):
+    """Upload a compressed package to Azure Storage."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        package_path = os.path.join(temp_dir, "package.gz")
+        with gzip.open(package_path, 'wb') as f_out:
+            for root, _, files in os.walk(folder_path):
+                for file_name in files:
+                    file_path = os.path.join(root, file_name)
+                    with open(file_path, 'rb') as f_in:
+                        shutil.copyfileobj(f_in, f_out)
+
+        # Upload the package to Azure Storage
+        blob_service_client = BlobServiceClient(account_url=f"https://{azure_storage_account}.blob.core.windows.net", credential=azure_storage_key)
+        container_name = "archia-backup-"+datetime.now().strftime('%Y%m%d%H%M%S')
+        container_client = blob_service_client.get_container_client(container_name)
+        container_client.create_container()
+        blob_client = blob_service_client.get_blob_client(container=container_name, blob="package.gz")
+        with open(package_path, "rb") as data:
+            blob_client.upload_blob(data)
+        print(f"Uploaded compressed package to Azure Storage.")
+
+def upload_compressed_package_to_s3(folder_path, aws_access_key, aws_secret_key, aws_region, aws_bucket):
+    """Upload a compressed package to AWS S3."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        package_path = os.path.join(temp_dir, "package.gz")
+        with gzip.open(package_path, 'wb') as f_out:
+            for root, _, files in os.walk(folder_path):
+                for file_name in files:
+                    file_path = os.path.join(root, file_name)
+                    with open(file_path, 'rb') as f_in:
+                        shutil.copyfileobj(f_in, f_out)
+
+        # Upload the package to AWS S3
+        s3_client = boto3.client('s3', aws_access_key_id=aws_access_key, aws_secret_access_key=aws_secret_key, region_name=aws_region)
+        s3_client.upload_file(package_path, aws_bucket, "package.gz")
+        print(f"Uploaded compressed package to AWS S3.")
+
 def load_config():
     """Load the configuration from config.json"""
     if os.path.exists(CONFIG_FILE):
@@ -313,6 +428,106 @@ def save_config(config):
     """Save the configuration to config.json"""
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f)
+
+def transfer_animation(stop_event):
+    """Transfer animation."""
+    frame_index = 0
+    while not stop_event.is_set():
+        sys.stdout.write(f"\r{frames[frame_index % len(frames)]}")
+        sys.stdout.flush()
+        frame_index += 1
+        time.sleep(0.08)
+
+def get_azure_credentials():
+    """Wizard to get Azure credentials."""
+    azure_storage_account = input("Enter Azure Storage Account Name: ")
+    azure_storage_key = getpass.getpass("Enter Azure Storage Account Key: ")
+    return azure_storage_account, azure_storage_key
+
+def get_aws_credentials():
+    """Wizard to get AWS credentials."""
+    aws_access_key = input("Enter AWS Access Key: ")
+    aws_secret_key = getpass.getpass("Enter AWS Secret Key: ")
+    aws_region = input("Enter AWS Region: ")
+    aws_bucket = input("Enter AWS S3 Bucket Name: ")
+    return aws_access_key, aws_secret_key, aws_region, aws_bucket
+
+def show_help():
+    """Display help information."""
+    help_text = """
+    Archia Backup Client Help
+
+    Commands:
+
+    1. Register a User:
+       python client.py register
+
+    2. Add a Host:
+       python client.py add-host
+
+    3. Upload a File or Folder:
+       python client.py <file_path_or_folder_path>
+
+    4. List Snapshots:
+       python client.py list-snapshots
+
+    5. Restore a Snapshot:
+       python client.py restore <snapshot_name> <restore_path>
+
+    6. Delete a Snapshot:
+       python client.py delete-snapshot <snapshot_name>
+
+    7. Package a Folder:
+       python client.py package <folder_path>
+
+    8. Upload to Azure Storage:
+       python client.py azure <folder_path>
+
+    9. Upload to AWS S3:
+       python client.py s3 <folder_path>
+
+    10. Upload Compressed Package to Azure Storage:
+        python client.py azure-compressed <folder_path>
+
+    11. Upload Compressed Package to AWS S3:
+        python client.py s3-compressed <folder_path>
+
+    Examples:
+
+    - Register a user:
+      python client.py register
+
+    - Add a host:
+      python client.py add-host
+
+    - Upload a folder:
+      python client.py /path/to/folder
+
+    - List snapshots:
+      python client.py list-snapshots
+
+    - Restore a snapshot:
+      python client.py restore snapshot1 /path/to/restore
+
+    - Delete a snapshot:
+      python client.py delete-snapshot snapshot1
+
+    - Package a folder:
+      python client.py package /path/to/folder
+
+    - Upload to Azure Storage:
+      python client.py azure /path/to/folder
+
+    - Upload to AWS S3:
+      python client.py s3 /path/to/folder
+
+    - Upload compressed package to Azure Storage:
+      python client.py azure-compressed /path/to/folder
+
+    - Upload compressed package to AWS S3:
+      python client.py s3-compressed /path/to/folder
+    """
+    print(help_text)
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -342,7 +557,9 @@ if __name__ == "__main__":
         # Load configuration
         config = load_config()
 
-        if sys.argv[1] == "restore":
+        if sys.argv[1] == "help":
+            show_help()
+        elif sys.argv[1] == "restore":
             if len(sys.argv) < 4:
                 print("Usage: python backup_client.py restore <snapshot_name> <restore_path>")
             else:
@@ -367,6 +584,54 @@ if __name__ == "__main__":
             else:
                 folder_path = sys.argv[2]
                 package_folder(folder_path, session)
+        elif sys.argv[1] == "azure":
+            if len(sys.argv) < 3:
+                print("Usage: python backup_client.py azure <folder_path>")
+            else:
+                folder_path = sys.argv[2]
+                azure_storage_account, azure_storage_key = get_azure_credentials()
+                stop_event = threading.Event()
+                transfer_thread = threading.Thread(target=transfer_animation, args=(stop_event,))
+                transfer_thread.start()
+                upload_to_azure(folder_path, azure_storage_account, azure_storage_key)
+                stop_event.set()
+                transfer_thread.join()
+        elif sys.argv[1] == "s3":
+            if len(sys.argv) < 3:
+                print("Usage: python backup_client.py s3 <folder_path>")
+            else:
+                folder_path = sys.argv[2]
+                aws_access_key, aws_secret_key, aws_region, aws_bucket = get_aws_credentials()
+                stop_event = threading.Event()
+                transfer_thread = threading.Thread(target=transfer_animation, args=(stop_event,))
+                transfer_thread.start()
+                upload_to_s3(folder_path, aws_access_key, aws_secret_key, aws_region, aws_bucket)
+                stop_event.set()
+                transfer_thread.join()
+        elif sys.argv[1] == "azure-compressed":
+            if len(sys.argv) < 3:
+                print("Usage: python backup_client.py azure-compressed <folder_path>")
+            else:
+                folder_path = sys.argv[2]
+                azure_storage_account, azure_storage_key = get_azure_credentials()
+                stop_event = threading.Event()
+                transfer_thread = threading.Thread(target=transfer_animation, args=(stop_event,))
+                transfer_thread.start()
+                upload_compressed_package_to_azure(folder_path, azure_storage_account, azure_storage_key)
+                stop_event.set()
+                transfer_thread.join()
+        elif sys.argv[1] == "s3-compressed":
+            if len(sys.argv) < 3:
+                print("Usage: python backup_client.py s3-compressed <folder_path>")
+            else:
+                folder_path = sys.argv[2]
+                aws_access_key, aws_secret_key, aws_region, aws_bucket = get_aws_credentials()
+                stop_event = threading.Event()
+                transfer_thread = threading.Thread(target=transfer_animation, args=(stop_event,))
+                transfer_thread.start()
+                upload_compressed_package_to_s3(folder_path, aws_access_key, aws_secret_key, aws_region, aws_bucket)
+                stop_event.set()
+                transfer_thread.join()
         else:
             file_or_folder_path = sys.argv[1]
             if os.path.isdir(file_or_folder_path):
