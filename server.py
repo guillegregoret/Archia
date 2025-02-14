@@ -17,6 +17,7 @@ CHUNK_SIZE = 1024 * 1024  # 1MB chunks
 HASHES_FILE = os.path.join(UPLOAD_FOLDER, "hashes.json")
 SNAPSHOTS_FILE = os.path.join(UPLOAD_FOLDER, "snapshots.json")
 USERS_FILE = os.path.join(UPLOAD_FOLDER, "users.json")
+PACKAGES_FILE = os.path.join(UPLOAD_FOLDER, "packages.json")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(ARCHIVE_FOLDER, exist_ok=True)
 os.makedirs(SNAPSHOT_FOLDER, exist_ok=True)
@@ -42,6 +43,13 @@ if os.path.exists(USERS_FILE):
 else:
     users = {}
 
+# Load existing packages
+if os.path.exists(PACKAGES_FILE):
+    with open(PACKAGES_FILE, 'r') as f:
+        packages = json.load(f)
+else:
+    packages = {}
+
 def save_hashes():
     with open(HASHES_FILE, 'w') as f:
         json.dump(file_hashes, f)
@@ -53,6 +61,10 @@ def save_snapshots():
 def save_users():
     with open(USERS_FILE, 'w') as f:
         json.dump(users, f)
+
+def save_packages():
+    with open(PACKAGES_FILE, 'w') as f:
+        json.dump(packages, f)
 
 def check_auth(username, password):
     if username in users and check_password_hash(users[username]['password'], password):
@@ -75,9 +87,22 @@ def register():
     password = data.get("password")
     if username in users:
         return jsonify({"error": "User already exists"}), 400
-    users[username] = {"password": generate_password_hash(password)}
+    users[username] = {"password": generate_password_hash(password), "hosts": []}
     save_users()
     return jsonify({"message": "User registered successfully"}), 201
+
+@app.route("/add-host", methods=["POST"])
+@requires_auth
+def add_host():
+    data = request.json
+    username = data.get("username")
+    hostname = data.get("hostname")
+    if username in users:
+        users[username]["hosts"].append(hostname)
+        save_users()
+        return jsonify({"message": "Host added successfully"}), 201
+    else:
+        return jsonify({"error": "User not found"}), 404
 
 @app.route("/upload", methods=["POST"])
 @requires_auth
@@ -156,7 +181,6 @@ def upload_file():
             os.remove(temp_gz_path)
         return jsonify({"error": f"Failed to save file: {str(e)}"}), 500
 
-
 @app.route("/check-hash", methods=["POST"])
 @requires_auth
 def check_hash():
@@ -177,7 +201,7 @@ def list_files():
         for root, _, filenames in os.walk(user_folder):
             for filename in filenames:
                 file_path = os.path.join(root, filename)
-                if os.path.isfile(file_path) and filename not in ["hashes.json", "snapshots.json", "users.json"]:
+                if os.path.isfile(file_path) and filename not in ["hashes.json", "snapshots.json", "users.json", "packages.json"]:
                     file_size = os.path.getsize(file_path)
                     file_size_kb = file_size / 1024  # Convert bytes to kilobytes
                     relative_path = os.path.relpath(file_path, user_folder)
@@ -227,7 +251,7 @@ def sync_stats():
     for root, _, filenames in os.walk(user_folder):
         for filename in filenames:
             file_path = os.path.join(root, filename)
-            if os.path.isfile(file_path) and filename not in ["hashes.json", "snapshots.json", "users.json"]:
+            if os.path.isfile(file_path) and filename not in ["hashes.json", "snapshots.json", "users.json", "packages.json"]:
                 file_size = os.path.getsize(file_path)
                 remote_size += file_size
                 relative_path = os.path.relpath(file_path, user_folder)
@@ -258,7 +282,7 @@ def snapshot():
     for root, _, filenames in os.walk(user_folder):
         for filename in filenames:
             file_path = os.path.join(root, filename)
-            if os.path.isfile(file_path) and filename not in ["hashes.json", "snapshots.json", "users.json"]:
+            if os.path.isfile(file_path) and filename not in ["hashes.json", "snapshots.json", "users.json", "packages.json"]:
                 relative_path = os.path.relpath(file_path, user_folder)
                 snapshot_files.append(relative_path)
 
@@ -319,6 +343,30 @@ def delete_snapshot():
         return jsonify({"message": f"Snapshot {snapshot_name} deleted successfully"}), 200
     else:
         return jsonify({"error": "Snapshot not found"}), 404
+
+@app.route("/package", methods=["POST"])
+@requires_auth
+def package():
+    if "file" not in request.files:
+        return jsonify({"error": "No file part"}), 400
+
+    file = request.files["file"]
+    username = request.authorization.username
+
+    try:
+        # Ensure the user's folder exists
+        user_folder = os.path.join(UPLOAD_FOLDER, username)
+        os.makedirs(user_folder, exist_ok=True)
+
+        # Save the uploaded package in the user's folder
+        package_path = os.path.join(user_folder, file.filename)
+        file.save(package_path)
+
+        return jsonify({"message": "Package uploaded successfully", "filename": file.filename}), 200
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to save package: {str(e)}"}), 500
+
 
 if __name__ == "__main__":
     app.run(

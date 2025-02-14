@@ -8,6 +8,9 @@ import hashlib
 from tqdm import tqdm
 from datetime import datetime
 import getpass
+import shutil
+import json
+import tempfile
 
 SERVER_URL = "https://archia.gregoret.com.ar:7200"
 UPLOAD_URL = f"{SERVER_URL}/upload"
@@ -21,10 +24,12 @@ DOWNLOAD_FILE_URL = f"{SERVER_URL}/download-file"
 LIST_FILES_URL = f"{SERVER_URL}/list-files"
 REGISTER_URL = f"{SERVER_URL}/register"
 DELETE_SNAPSHOT_URL = f"{SERVER_URL}/delete-snapshot"
+PACKAGE_URL = f"{SERVER_URL}/package"
 CHUNK_SIZE = 1024 * 1024  # 1MB per chunk
 MAX_CPU_PERCENT = 85  # Maximum CPU usage percentage
 MAX_MEMORY_PERCENT = 94  # Maximum memory usage percentage
 THROTTLE_SLEEP = 0.1  # Sleep time in seconds when throttling
+CONFIG_FILE = "config.json"
 
 def check_resources():
     """Check if system resources are over threshold"""
@@ -259,12 +264,55 @@ def register_user(session):
     else:
         print("Failed to register user.")
 
+def add_host(session):
+    username = input("Enter username: ")
+    hostname = input("Enter hostname: ")
+    response = session.post(f"{SERVER_URL}/add-host", json={"username": username, "hostname": hostname}, verify=True)
+    if response.status_code == 201:
+        print("Host added successfully.")
+    else:
+        print("Failed to add host.")
+
 def delete_snapshot(snapshot_name, session):
     response = session.post(DELETE_SNAPSHOT_URL, json={"snapshot_name": snapshot_name}, verify=True)
     if response.status_code == 200:
         print(f"Snapshot {snapshot_name} deleted successfully.")
     else:
         print("Failed to delete snapshot.")
+
+def package_folder(folder_path, session):
+    """Package a folder and upload it to the server."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        package_path = os.path.join(temp_dir, "package.gz")
+        with gzip.open(package_path, 'wb') as f_out:
+            for root, _, files in os.walk(folder_path):
+                for file_name in files:
+                    file_path = os.path.join(root, file_name)
+                    with open(file_path, 'rb') as f_in:
+                        shutil.copyfileobj(f_in, f_out)
+
+        # Upload the package to the server
+        with open(package_path, 'rb') as f:
+            files = {'file': (os.path.basename(package_path), f, 'application/gzip')}
+            response = session.post(PACKAGE_URL, files=files, verify=True)
+            if response.status_code == 200:
+                print("Package uploaded successfully.")
+            else:
+                print(f"Failed to upload package: {response.json()}")
+                
+def load_config():
+    """Load the configuration from config.json"""
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as f:
+            config = json.load(f)
+        return config
+    else:
+        return {}
+
+def save_config(config):
+    """Save the configuration to config.json"""
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(config, f)
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -291,6 +339,9 @@ if __name__ == "__main__":
         password = getpass.getpass("Enter password: ")
         session.auth = (username, password)
 
+        # Load configuration
+        config = load_config()
+
         if sys.argv[1] == "restore":
             if len(sys.argv) < 4:
                 print("Usage: python backup_client.py restore <snapshot_name> <restore_path>")
@@ -302,15 +353,27 @@ if __name__ == "__main__":
             list_snapshots(session)
         elif sys.argv[1] == "register":
             register_user(session)
+        elif sys.argv[1] == "add-host":
+            add_host(session)
         elif sys.argv[1] == "delete-snapshot":
             if len(sys.argv) < 3:
                 print("Usage: python backup_client.py delete-snapshot <snapshot_name>")
             else:
                 snapshot_name = sys.argv[2]
                 delete_snapshot(snapshot_name, session)
+        elif sys.argv[1] == "package":
+            if len(sys.argv) < 3:
+                print("Usage: python backup_client.py package <folder_path>")
+            else:
+                folder_path = sys.argv[2]
+                package_folder(folder_path, session)
         else:
             file_or_folder_path = sys.argv[1]
             if os.path.isdir(file_or_folder_path):
                 upload_folder(file_or_folder_path, session)
             else:
                 upload_file(file_or_folder_path, os.path.basename(file_or_folder_path), session)
+
+            # Save the current host configuration
+            config[username] = {"hosts": config.get(username, {}).get("hosts", []) + [file_or_folder_path]}
+            save_config(config)
